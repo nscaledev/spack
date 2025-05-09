@@ -1638,7 +1638,12 @@ build(PackageNode) :- attr("node", PackageNode), not concrete(PackageNode).
 %   200 - 299   Shifted priorities for build nodes; correspond to priorities 0 - 99.
 %   100 - 199   Unshifted priorities. Currently only includes minimizing #builds and minimizing dupes.
 %   0   -  99   Priorities for non-built nodes.
-build_priority(PackageNode, 200) :- build(PackageNode), attr("node", PackageNode).
+
+treat_node_as_concrete(node(X, Package)) :- external(node(X, Package)).
+treat_node_as_concrete(node(X, Package)) :- attr("node", node(X, Package)), runtime(Package).
+
+build_priority(PackageNode, 200) :- build(PackageNode), attr("node", PackageNode), not treat_node_as_concrete(PackageNode).
+build_priority(PackageNode, 0)   :- build(PackageNode), attr("node", PackageNode), treat_node_as_concrete(PackageNode).
 build_priority(PackageNode, 0)   :- not build(PackageNode), attr("node", PackageNode).
 
 % don't assign versions from installed packages unless reuse is enabled
@@ -1695,7 +1700,7 @@ opt_criterion(310, "requirement weight").
 % Try hard to reuse installed packages (i.e., minimize the number built)
 opt_criterion(110, "number of packages to build (vs. reuse)").
 #minimize { 0@110: #true }.
-#minimize { 1@110,PackageNode : build(PackageNode) }.
+#minimize { 1@110,PackageNode : build(PackageNode), not treat_node_as_concrete(PackageNode) }.
 
 opt_criterion(100, "number of nodes from the same package").
 #minimize { 0@100: #true }.
@@ -1860,48 +1865,59 @@ opt_criterion(10, "target mismatches").
       not runtime(Dependency)
 }.
 
-opt_criterion(5, "non-preferred targets").
-#minimize{ 0@205: #true }.
-#minimize{ 0@5: #true }.
+opt_criterion(7, "non-preferred targets").
+#minimize{ 0@207: #true }.
+#minimize{ 0@7: #true }.
 #minimize{
-    Weight@5+Priority,node(X, Package)
+    Weight@7+Priority,node(X, Package)
     : node_target_weight(node(X, Package), Weight),
       build_priority(node(X, Package), Priority),
       not runtime(Package)
 }.
 
-opt_criterion(4, "preferred providers (language runtimes)").
-#minimize{ 0@204: #true }.
-#minimize{ 0@4: #true }.
+opt_criterion(5, "preferred providers (language runtimes)").
+#minimize{ 0@205: #true }.
+#minimize{ 0@5: #true }.
 #minimize{
-    Weight@4+Priority,ProviderNode,X,Virtual
+    Weight@5+Priority,ProviderNode,X,Virtual
     : provider_weight(ProviderNode, node(X, Virtual), Weight),
       language_runtime(Virtual),
       build_priority(ProviderNode, Priority)
 }.
 
 % Choose more recent versions for runtimes
-opt_criterion(3, "version badness (runtimes)").
-#minimize{ 0@203: #true }.
-#minimize{ 0@3: #true }.
+opt_criterion(4, "version badness (runtimes)").
+#minimize{ 0@204: #true }.
+#minimize{ 0@4: #true }.
 #minimize{
-    Weight@3,node(X, Package)
+    Weight@4,node(X, Package)
     : version_weight(node(X, Package), Weight),
       runtime(Package)
 }.
 
 % Choose best target for runtimes
-opt_criterion(2, "non-preferred targets (runtimes)").
-#minimize{ 0@202: #true }.
-#minimize{ 0@2: #true }.
+opt_criterion(3, "non-preferred targets (runtimes)").
+#minimize{ 0@203: #true }.
+#minimize{ 0@3: #true }.
 #minimize{
-    Weight@2,node(X, Package)
+    Weight@3,node(X, Package)
     : node_target_weight(node(X, Package), Weight),
       runtime(Package)
 }.
 
 % Choose more recent versions for nodes
-opt_criterion(1, "edge wiring").
+opt_criterion(2, "providers on edges").
+#minimize{ 0@202: #true }.
+#minimize{ 0@2: #true }.
+#minimize{
+    Weight@2,ParentNode,ProviderNode,Virtual
+    : provider_weight(ProviderNode, Virtual, Weight),
+      not attr("root", ProviderNode),
+      depends_on(ParentNode, ProviderNode)
+}.
+
+% Choose more recent versions for nodes
+opt_criterion(1, "version badness on edges").
 #minimize{ 0@201: #true }.
 #minimize{ 0@1: #true }.
 #minimize{
@@ -1912,14 +1928,6 @@ opt_criterion(1, "edge wiring").
 }.
 
 
-#minimize{ 0@201: #true }.
-#minimize{ 0@1: #true }.
-#minimize{
-    Weight@1,ParentNode,ProviderNode,Virtual
-    : provider_weight(ProviderNode, Virtual, Weight),
-      not attr("root", ProviderNode),
-      depends_on(ParentNode, ProviderNode)
-}.
 
 %-----------
 % Notes
