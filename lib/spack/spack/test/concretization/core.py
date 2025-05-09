@@ -3470,3 +3470,99 @@ def test_installed_compiler_and_better_external(
     with spack.config.override("concretizer:reuse", False):
         mpileaks = spack.concretize.concretize_one("mpileaks")
         assert mpileaks.satisfies("%gcc@10")
+
+
+@pytest.mark.regression("50006")
+def test_concrete_multi_valued_variants_in_externals(mutable_config, mock_packages, tmp_path):
+    """Tests that concrete multivalued variants in externals cannot be extended with additional
+    values when concretizing.
+    """
+    packages_yaml = syaml.load_config(
+        f"""
+packages:
+  gcc:
+    buildable: false
+    externals:
+    - spec: gcc@12.1.0 languages:='c,c++'
+      prefix: {tmp_path / 'gcc-12'}
+      extra_attributes:
+          compilers:
+            c: {tmp_path / 'gcc-12'}/bin/gcc
+            cxx: {tmp_path / 'gcc-12'}/bin/g++
+
+    - spec: gcc@14.1.0 languages:=fortran
+      prefix: {tmp_path / 'gcc-14'}
+      extra_attributes:
+        compilers:
+            fortran: {tmp_path / 'gcc-14'}/bin/gfortran
+"""
+    )
+    mutable_config.set("packages", packages_yaml["packages"])
+
+    with pytest.raises(spack.solver.asp.UnsatisfiableSpecError):
+        spack.concretize.concretize_one("pkg-b %gcc@14")
+
+    s = spack.concretize.concretize_one("pkg-b %gcc")
+    assert s["c"].satisfies("gcc@12.1.0"), s.tree()
+    assert s["c"].external
+    assert s["c"].satisfies("languages=c,c++") and not s["c"].satisfies("languages=fortran")
+
+
+def test_concrete_multi_valued_in_input_specs(default_mock_concretization):
+    """Tests that we can use := to specify exactly multivalued variants in input specs."""
+    s = default_mock_concretization("gcc languages:=fortran")
+    assert not s.external and s["c"].external
+    assert s.satisfies("languages:=fortran")
+    assert not s.satisfies("languages=c") and not s.satisfies("languages=c++")
+
+
+def test_concrete_multi_valued_variants_in_requirements(mutable_config, mock_packages, tmp_path):
+    """Tests that concrete multivalued variants can be imposed by requirements."""
+    packages_yaml = syaml.load_config(
+        """
+packages:
+  pkg-a:
+    require:
+    - libs:=static
+"""
+    )
+    mutable_config.set("packages", packages_yaml["packages"])
+
+    with pytest.raises(spack.solver.asp.UnsatisfiableSpecError):
+        spack.concretize.concretize_one("pkg-a libs=shared")
+        spack.concretize.concretize_one("pkg-a libs=shared,static")
+
+    s = spack.concretize.concretize_one("pkg-a")
+    assert s.satisfies("libs:=static")
+    assert not s.satisfies("libs=shared")
+
+
+def test_concrete_multi_valued_variants_in_depends_on(default_mock_concretization):
+    """Tests the use of := in depends_on directives"""
+    with pytest.raises(spack.solver.asp.UnsatisfiableSpecError):
+        default_mock_concretization("gmt-concrete-mv-dependency ^mvdefaults foo:=c")
+        default_mock_concretization("gmt-concrete-mv-dependency ^mvdefaults foo:=a,c")
+        default_mock_concretization("gmt-concrete-mv-dependency ^mvdefaults foo:=b,c")
+
+    s = default_mock_concretization("gmt-concrete-mv-dependency")
+    assert s.satisfies("^mvdefaults foo:=a,b"), s.tree()
+    assert not s.satisfies("^mvdefaults foo=c")
+
+
+def test_concrete_multi_valued_variants_when_args(default_mock_concretization):
+    """Tests the use of := in conflicts and when= arguments"""
+    # Check conflicts("foo:=a,b", when="@0.9")
+    with pytest.raises(spack.solver.asp.UnsatisfiableSpecError):
+        default_mock_concretization("mvdefaults@0.9 foo:=a,b")
+
+    for c in ("foo:=a", "foo:=a,b,c", "foo:=a,c", "foo:=b,c"):
+        s = default_mock_concretization(f"mvdefaults@0.9 {c}")
+        assert s.satisfies(c)
+
+    # Check depends_on("pkg-b", when="foo:=b,c")
+    s = default_mock_concretization("mvdefaults foo:=b,c")
+    assert s.satisfies("^pkg-b")
+
+    for c in ("foo:=a", "foo:=a,b,c", "foo:=a,b", "foo:=a,c"):
+        s = default_mock_concretization(f"mvdefaults {c}")
+        assert not s.satisfies("^pkg-b")

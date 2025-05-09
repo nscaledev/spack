@@ -159,10 +159,12 @@ unification_set(SetID, VirtualNode)
 
 % TODO: literals, at the moment, can only influence the "root" unification set. This needs to be extended later.
 
-% Node attributes that have multiple node arguments (usually, only the first argument is a node)
-multiple_nodes_attribute("depends_on").
-multiple_nodes_attribute("virtual_on_edge").
-multiple_nodes_attribute("provider_set").
+% Node attributes that need custom rules in ASP, e.g. because they involve multiple nodes
+node_attributes_with_custom_rules("depends_on").
+node_attributes_with_custom_rules("virtual_on_edge").
+node_attributes_with_custom_rules("provider_set").
+node_attributes_with_custom_rules("concrete_variant_set").
+node_attributes_with_custom_rules("concrete_variant_request").
 
 trigger_condition_holds(TriggerID, node(min_dupe_id, Package)) :-
   solve_literal(TriggerID),
@@ -397,11 +399,25 @@ trigger_condition_holds(ID, RequestorNode) :-
   trigger_node(ID, PackageNode, RequestorNode);
   attr(Name, node(X, A1))             : condition_requirement(ID, Name, A1),             condition_nodes(ID, PackageNode, node(X, A1));
   attr(Name, node(X, A1), A2)         : condition_requirement(ID, Name, A1, A2),         condition_nodes(ID, PackageNode, node(X, A1));
-  attr(Name, node(X, A1), A2, A3)     : condition_requirement(ID, Name, A1, A2, A3),     condition_nodes(ID, PackageNode, node(X, A1)), not multiple_nodes_attribute(Name);
+  attr(Name, node(X, A1), A2, A3)     : condition_requirement(ID, Name, A1, A2, A3),     condition_nodes(ID, PackageNode, node(X, A1)), not node_attributes_with_custom_rules(Name);
   attr(Name, node(X, A1), A2, A3, A4) : condition_requirement(ID, Name, A1, A2, A3, A4), condition_nodes(ID, PackageNode, node(X, A1));
   % Special cases
   attr("depends_on", node(X, A1), node(Y, A2), A3) : condition_requirement(ID, "depends_on", A1, A2, A3), condition_nodes(ID, PackageNode, node(X, A1)), condition_nodes(ID, PackageNode, node(Y, A2));
   not cannot_hold(ID, PackageNode).
+
+condition_with_concrete_variant(ID, Package, Variant) :- condition_requirement(ID, "concrete_variant_request", Package, Variant, _).
+
+cannot_hold(ID, PackageNode) :-
+  not attr("variant_value", node(X, A1), Variant, Value),
+  condition_with_concrete_variant(ID, A1, Variant),
+  condition_requirement(ID, "concrete_variant_request", A1, Variant, Value),
+  condition_nodes(ID, PackageNode, node(X, A1)).
+
+cannot_hold(ID, PackageNode) :-
+  attr("variant_value", node(X, A1), Variant, Value),
+  condition_with_concrete_variant(ID, A1, Variant),
+  not condition_requirement(ID, "concrete_variant_request", A1, Variant, Value),
+  condition_nodes(ID, PackageNode, node(X, A1)).
 
 condition_holds(ConditionID, node(X, Package))
   :- pkg_fact(Package, condition_trigger(ConditionID, TriggerID)),
@@ -449,8 +465,8 @@ imposed_nodes(ConditionID, PackageNode, node(X, A1))
 
 % Conditions that hold impose may impose constraints on other specs
 attr(Name, node(X, A1))             :- impose(ID, PackageNode), imposed_constraint(ID, Name, A1),             imposed_nodes(ID, PackageNode, node(X, A1)).
-attr(Name, node(X, A1), A2)         :- impose(ID, PackageNode), imposed_constraint(ID, Name, A1, A2),         imposed_nodes(ID, PackageNode, node(X, A1)), not multiple_nodes_attribute(Name).
-attr(Name, node(X, A1), A2, A3)     :- impose(ID, PackageNode), imposed_constraint(ID, Name, A1, A2, A3),     imposed_nodes(ID, PackageNode, node(X, A1)), not multiple_nodes_attribute(Name).
+attr(Name, node(X, A1), A2)         :- impose(ID, PackageNode), imposed_constraint(ID, Name, A1, A2),         imposed_nodes(ID, PackageNode, node(X, A1)), not node_attributes_with_custom_rules(Name).
+attr(Name, node(X, A1), A2, A3)     :- impose(ID, PackageNode), imposed_constraint(ID, Name, A1, A2, A3),     imposed_nodes(ID, PackageNode, node(X, A1)), not node_attributes_with_custom_rules(Name).
 attr(Name, node(X, A1), A2, A3, A4) :- impose(ID, PackageNode), imposed_constraint(ID, Name, A1, A2, A3, A4), imposed_nodes(ID, PackageNode, node(X, A1)).
 
 % Provider set is relevant only for literals, since it's the only place where `^[virtuals=foo] bar`
@@ -470,6 +486,15 @@ provider(ProviderNode, VirtualNode) :- attr("provider_set", ProviderNode, Virtua
   :- impose(ID, node(X, A1)),
      imposed_constraint(ID, "depends_on", A1, A2, A3),
      internal_error("Build deps must land in exactly one duplicate").
+
+% For := we must keep track of the origin of the fact, since we need to check
+% each condition separately, i.e. foo:=a,b in one place and foo:=c in another
+% should not make foo:=a,b,c possible
+attr("concrete_variant_set", node(X, A1), Variant, Value, ID)
+  :- impose(ID, PackageNode),
+     imposed_nodes(ID, PackageNode, node(X, A1)),
+     imposed_constraint(ID, "concrete_variant_set", A1, Variant, Value).
+
 
 % The rule below accounts for expressions like:
 %
@@ -1148,6 +1173,22 @@ error(100, "No valid value for variant '{1}' of package '{0}'", Package, Variant
 
 % if a variant is set to anything, it is considered 'set'.
 attr("variant_set", PackageNode, Variant) :- attr("variant_set", PackageNode, Variant, _).
+
+% Setting a concrete variant implies setting a variant
+concrete_variant_value(PackageNode, Variant, Value, Origin) :- attr("concrete_variant_set", PackageNode, Variant, Value, Origin).
+
+attr("variant_set", PackageNode, Variant, Value) :- attr("concrete_variant_set", PackageNode, Variant, Value, _).
+
+% Concrete variant values must be in the answer set
+:- concrete_variant_value(PackageNode, Variant, Value, _), not attr("variant_value", PackageNode, Variant, Value).
+
+% Extra variant values are not allowed, if the variant is concrete
+variant_is_concrete(PackageNode, Variant, Origin) :- concrete_variant_value(PackageNode, Variant, _, Origin).
+
+error(100, "The variant {0} in package {1} specified as := has the extra value {2}", Variant, PackageNode, Value)
+:- variant_is_concrete(PackageNode, Variant, Origin),
+   attr("variant_value", PackageNode, Variant, Value),
+   not concrete_variant_value(PackageNode, Variant, Value, Origin).
 
 % A variant cannot have a value that is not also a possible value
 % This only applies to packages we need to build -- concrete packages may
