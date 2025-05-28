@@ -69,6 +69,35 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
 
     sp.add_parser("list", help="list configuration sections")
 
+    scopes_parser = sp.add_parser(
+        "scopes", help="list defined scopes in descending order of precedence"
+    )
+    scopes_parser.add_argument(
+        "-i", "--included", action="store_true", default=False, help="list only included scopes"
+    )
+    scopes_parser.add_argument(
+        "-p",
+        "--path-scopes",
+        action="store_true",
+        default=False,
+        help="list only writable scopes with an associated path",
+    )
+    scopes_parser.add_argument(
+        "-s",
+        "--show-paths",
+        action="store_true",
+        default=False,
+        help="show associated paths for appropriate scopes",
+    )
+    scopes_parser.add_argument(
+        "section",
+        help="tailor scope path information to the specified section (implies -s|--show-paths)"
+        "\noptions: %(choices)s",
+        metavar="section",
+        nargs="?",
+        choices=spack.config.SECTION_SCHEMAS,
+    )
+
     add_parser = sp.add_parser("add", help="add configuration parameters")
     add_parser.add_argument(
         "path",
@@ -214,6 +243,34 @@ def config_list(args):
     Used primarily for shell tab completion scripts.
     """
     print(" ".join(list(spack.config.SECTION_SCHEMAS)))
+
+
+def _config_scope_info_string(args, scope):
+    if (args.section or args.show_paths) and hasattr(scope, "path"):
+        section_path = scope.get_section_filename(args.section) if args.section else None
+        path = (
+            section_path
+            if section_path and os.path.exists(section_path)
+            else f"{scope.path}{os.sep}"
+        )
+        return f"{scope.name} ({path})"
+    else:
+        return scope.name
+
+
+def config_scopes(args):
+    """List configured scopes in descending order of precedence."""
+
+    scopes = (
+        spack.config.scopes().reversed_values()
+        if (args.included or not args.path_scopes)
+        else spack.config.writable_scopes()
+    )
+    if args.included:
+        scopes = (i for s in scopes for i in s.included_scopes)
+    info = (_config_scope_info_string(args, s) for s in scopes)
+
+    print(" ".join(info))
 
 
 def config_add(args):
@@ -581,6 +638,7 @@ def config(parser, args):
         "blame": config_blame,
         "edit": config_edit,
         "list": config_list,
+        "scopes": config_scopes,
         "add": config_add,
         "rm": config_remove,
         "remove": config_remove,
