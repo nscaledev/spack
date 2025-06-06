@@ -2427,18 +2427,22 @@ class Spec:
         # Note: Relies on sorting dict by keys later in algorithm.
         deps = self._dependencies_dict(depflag=hash.depflag)
         if deps:
-            d["dependencies"] = [
-                {
-                    "name": name,
-                    hash.name: dspec.spec._cached_hash(hash),
-                    "parameters": {
-                        "deptypes": dt.flag_to_tuple(dspec.depflag),
-                        "virtuals": dspec.virtuals,
-                    },
-                }
-                for name, edges_for_name in sorted(deps.items())
-                for dspec in edges_for_name
-            ]
+            dependencies = []
+            for name, edges_for_name in sorted(deps.items()):
+                for dspec in edges_for_name:
+                    dep_attrs = {
+                        "name": name,
+                        hash.name: dspec.spec._cached_hash(hash),
+                        "parameters": {
+                            "deptypes": dt.flag_to_tuple(dspec.depflag),
+                            "virtuals": dspec.virtuals,
+                        },
+                    }
+                    if dspec.direct:
+                        dep_attrs["parameters"]["direct"] = True
+                    dependencies.append(dep_attrs)
+
+            d["dependencies"] = dependencies
 
         # Name is included in case this is replacing a virtual.
         if self._build_spec:
@@ -5082,7 +5086,7 @@ class SpecfileReaderBase:
 
         # Pass 0: Determine hash type
         for node in nodes:
-            for _, _, _, dhash_type, _ in cls.dependencies_from_node_dict(node):
+            for _, _, _, dhash_type, _, _ in cls.dependencies_from_node_dict(node):
                 any_deps = True
                 if dhash_type:
                     hash_type = dhash_type
@@ -5113,11 +5117,12 @@ class SpecfileReaderBase:
         # Pass 2: Finish construction of all DAG edges (including build specs)
         for node_hash, node in hash_dict.items():
             node_spec = node["node_spec"]
-            for _, dhash, dtype, _, virtuals in cls.dependencies_from_node_dict(node):
+            for _, dhash, dtype, _, virtuals, direct in cls.dependencies_from_node_dict(node):
                 node_spec._add_dependency(
                     hash_dict[dhash]["node_spec"],
                     depflag=dt.canonicalize(dtype),
                     virtuals=virtuals,
+                    direct=direct,
                 )
             if "build_spec" in node.keys():
                 _, bhash, _ = cls.extract_build_spec_info_from_node_dict(node, hash_type=hash_type)
@@ -5158,9 +5163,9 @@ class SpecfileV1(SpecfileReaderBase):
         for node in nodes:
             # get dependency dict from the node.
             name, data = cls.name_and_data(node)
-            for dname, _, dtypes, _, virtuals in cls.dependencies_from_node_dict(data):
+            for dname, _, dtypes, _, virtuals, direct in cls.dependencies_from_node_dict(data):
                 deps[name]._add_dependency(
-                    deps[dname], depflag=dt.canonicalize(dtypes), virtuals=virtuals
+                    deps[dname], depflag=dt.canonicalize(dtypes), virtuals=virtuals, direct=direct
                 )
 
         reconstruct_virtuals_on_edges(result)
@@ -5198,7 +5203,7 @@ class SpecfileV1(SpecfileReaderBase):
                     raise spack.error.SpecError("Couldn't parse dependency spec.")
             else:
                 raise spack.error.SpecError("Couldn't parse dependency types in spec.")
-            yield dep_name, dep_hash, list(deptypes), hash_type, list(virtuals)
+            yield dep_name, dep_hash, list(deptypes), hash_type, list(virtuals), True
 
 
 class SpecfileV2(SpecfileReaderBase):
@@ -5235,13 +5240,15 @@ class SpecfileV2(SpecfileReaderBase):
                 # new format: elements of dependency spec are keyed.
                 for h in ht.HASHES:
                     if h.name in elt:
-                        dep_hash, deptypes, hash_type, virtuals = cls.extract_info_from_dep(elt, h)
+                        dep_hash, deptypes, hash_type, virtuals, direct = (
+                            cls.extract_info_from_dep(elt, h)
+                        )
                         break
                 else:  # We never determined a hash type...
                     raise spack.error.SpecError("Couldn't parse dependency spec.")
             else:
                 raise spack.error.SpecError("Couldn't parse dependency types in spec.")
-            result.append((dep_name, dep_hash, list(deptypes), hash_type, list(virtuals)))
+            result.append((dep_name, dep_hash, list(deptypes), hash_type, list(virtuals), direct))
         return result
 
     @classmethod
@@ -5249,7 +5256,8 @@ class SpecfileV2(SpecfileReaderBase):
         dep_hash, deptypes = elt[hash.name], elt["type"]
         hash_type = hash.name
         virtuals = []
-        return dep_hash, deptypes, hash_type, virtuals
+        direct = True
+        return dep_hash, deptypes, hash_type, virtuals, direct
 
     @classmethod
     def extract_build_spec_info_from_node_dict(cls, node, hash_type=ht.dag_hash.name):
@@ -5270,7 +5278,8 @@ class SpecfileV4(SpecfileV2):
         deptypes = elt["parameters"]["deptypes"]
         hash_type = hash.name
         virtuals = elt["parameters"]["virtuals"]
-        return dep_hash, deptypes, hash_type, virtuals
+        direct = True
+        return dep_hash, deptypes, hash_type, virtuals, direct
 
     @classmethod
     def load(cls, data):
@@ -5283,6 +5292,15 @@ class SpecfileV5(SpecfileV4):
     @classmethod
     def legacy_compiler(cls, node):
         raise RuntimeError("The 'compiler' option is unexpected in specfiles at v5 or greater")
+
+    @classmethod
+    def extract_info_from_dep(cls, elt, hash):
+        dep_hash = elt[hash.name]
+        deptypes = elt["parameters"]["deptypes"]
+        hash_type = hash.name
+        virtuals = elt["parameters"]["virtuals"]
+        direct = elt["parameters"].get("direct", False)
+        return dep_hash, deptypes, hash_type, virtuals, direct
 
 
 #: Alias to the latest version of specfiles
