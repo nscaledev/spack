@@ -4307,23 +4307,25 @@ def _specs_with_commits(spec):
     if not spec.package.needs_commit(spec.version):
         return
 
-    # check integrity of specified commit shas
-    if "commit" in spec.variants:
-        invalid_commit_msg = (
-            f"Internal Error: {spec.name}'s assigned commit {spec.variants['commit'].value}"
-            " does not meet commit syntax requirements."
-        )
-        assert vn.is_git_commit_sha(spec.variants["commit"].value), invalid_commit_msg
+    if isinstance(spec.version, spack.version.GitVersion):
+        if "commit" not in spec.variants and spec.version.commit_sha:
+            spec.variants["commit"] = vt.SingleValuedVariant("commit", spec.version.commit_sha)
 
     spec.package.resolve_binary_provenance()
-    # TODO(psakiev) assert commit is associated with ref
 
-    if isinstance(spec.version, spack.version.GitVersion):
-        if not spec.version.commit_sha:
-            # TODO(psakiev) this will be a failure when commit look up is automated
-            return
-        if "commit" not in spec.variants:
-            spec.variants["commit"] = vt.SingleValuedVariant("commit", spec.version.commit_sha)
+    if "commit" not in spec.variants:
+        tty.warn(
+            f"Unable to resolve the git commit for {spec.name}. "
+            "An installation of this binary won't have complete binary provenance."
+        )
+        return
+
+    # check integrity of user specified commit shas
+    invalid_commit_msg = (
+        f"Internal Error: {spec.name}'s assigned commit {spec.variants['commit'].value}"
+        " does not meet commit syntax requirements."
+    )
+    assert vn.is_git_commit_sha(spec.variants["commit"].value), invalid_commit_msg
 
 
 def _attach_python_to_external(
