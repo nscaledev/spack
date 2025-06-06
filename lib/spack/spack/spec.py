@@ -777,6 +777,7 @@ class DependencySpec:
         yield self.spec.name if self.spec else None
         yield self.depflag
         yield self.virtuals
+        yield self.direct
 
     def __str__(self) -> str:
         parent = self.parent.name if self.parent else None
@@ -3974,6 +3975,7 @@ class Spec:
                         node_ids[id(edge.spec)],
                         edge.depflag,
                         edge.virtuals,
+                        edge.direct,
                     )
                 )
 
@@ -3984,7 +3986,7 @@ class Spec:
 
             # level 1 edges all start with zero
             for i, edge in enumerate(sorted_l1_edges, start=1):
-                yield (0, i, edge.depflag, edge.virtuals)
+                yield (0, i, edge.depflag, edge.virtuals, edge.direct)
 
             # yield remaining edges in the order they were encountered during traversal
             if edge_list:
